@@ -2,6 +2,7 @@
 #include <windows.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <shellapi.h>
 #include <stdio.h>
 #include <intrin.h>
 #include "utils.h"
@@ -335,9 +336,9 @@ internal void EncodeArray( u32 length, MP_Encoder *encoder )
     }
 }
 
-internal void EncodeString( char *string, MP_Encoder *encoder )
+internal void EncodeString( String string, MP_Encoder *encoder )
 {
-    u64 length = strlen( string );
+    u64 length = string.length;
 
     if ( length < 32 )
     {
@@ -372,10 +373,15 @@ internal void EncodeString( char *string, MP_Encoder *encoder )
 
     for ( u64 characterIndex = 0; characterIndex < length; ++characterIndex )
     {
-        *encoder->at = ( u8 ) string[ characterIndex ];
+        *encoder->at = ( u8 ) string.content[ characterIndex ];
         encoder->at += 1;
     }
     encoder->length += ( u32 ) length;
+}
+
+internal void EncodeString( char *string, MP_Encoder *encoder )
+{
+    EncodeString( String{ ( u32 ) strlen( string ), string }, encoder );
 }
 
 inline void EncodeBool( bool value, MP_Encoder *encoder )
@@ -404,6 +410,26 @@ inline bool StringsAreEqual( String a, char *b )
     }
 
     bool result = *at == '\0';
+    return result;
+}
+
+inline u32 StringToUInt( Token string )
+{
+    u32 result = 0;
+    for ( u32 i = 0; i < string.textLength; ++i )
+    {
+        result += ( u32 ) ( pow( 10, ( f64 ) ( string.textLength - 1 - i ) ) ) * ( u32 ) ( string.text[ i ] - '0' );
+    }
+    return result;
+}
+
+inline u32 StringToUInt( String string )
+{
+    u32 result = 0;
+    for ( u32 i = 0; i < string.length; ++i )
+    {
+        result += ( u32 ) ( pow( 10, ( f64 ) ( string.length - 1 - i ) ) ) * ( u32 ) ( string.content[ i ] - '0' );
+    }
     return result;
 }
 
@@ -516,7 +542,7 @@ int main()
 
             arrayLength = ParseArrayLength( &parser );
 
-            printf( "Received method: %.*s with %d arguments\n", command.length, command.content, arrayLength );
+            printf( "Received command: %.*s with %d arguments\n", command.length, command.content, arrayLength );
             if ( arrayLength > 0 )
             {
                 // parse arguments
@@ -535,6 +561,208 @@ int main()
                 EncodeUInt( 0, &encoder );
                 printf( "Exit command received!\n" );
                 running = false;
+            }
+            else if ( StringsAreEqual( command, "Compile" ) )
+            {
+                EncodeMap( 2, &encoder );
+                // STARTUPINFO startInfo = {};
+                // startInfo.cb = sizeof( info );
+                // PROCESS_INFORMATION processInfo = {};
+                // bool created = CreateProcess( 0, "build.bat", 0, 0, false, 0, 0, 0, &startInfo, &processInfo );
+                SHELLEXECUTEINFO info = {};
+                info.cbSize = sizeof( info );
+                info.fMask = SEE_MASK_NOCLOSEPROCESS;
+                info.lpVerb = "open";
+                info.lpFile = "build.bat";
+                info.lpParameters = "> compilation.log";
+                // info.nShow = SW_SHOWNORMAL;
+                info.nShow = SW_HIDE;
+                bool started = ShellExecuteEx( &info );
+                EncodeString( "started", &encoder );
+                EncodeBool( started, &encoder );
+                EncodeString( "messages", &encoder );
+                u8 *arrayCountSpot = encoder.at;
+                EncodeArray( 1000, &encoder );
+
+                if ( started )
+                {
+                    WaitForSingleObject( info.hProcess, INFINITE );
+
+                    char *compilationFile = ReadEntireFileIntoMemoryAndNullTerminate( "compilation.log" );
+                    if ( compilationFile )
+                    {
+                        Tokenizer tokenizer = {};
+                        tokenizer.at = compilationFile;
+                        bool parsing = true;
+                        u32 errorCount = 0;
+                        while ( parsing )
+                        {
+                            Token token = GetToken( &tokenizer );
+                            switch ( token.type )
+                            {
+                                case Token_Type::Colon:
+                                {
+                                    Token nextToken = GetToken( &tokenizer );
+                                    if ( nextToken.type == Token_Type::Identifier && ( TokenEquals( nextToken, "error" ) ||
+                                                                                       TokenEquals( nextToken, "fatal" ) ||
+                                                                                       TokenEquals( nextToken, "warning" ) ) )
+                                    {
+                                        char *temp = tokenizer.at;
+                                        while ( *temp != '\n' )
+                                        {
+                                            --temp;
+                                        }
+                                        ++temp;
+
+                                        Tokenizer errorTokenizer = {};
+                                        errorTokenizer.at = temp;
+
+                                        char *fileStart = temp;
+                                        char *fileEnd = 0;
+                                        Token errorToken = GetToken( &errorTokenizer );
+                                        if ( TokenEquals( errorToken, "LINK" ) )
+                                        {
+                                            fileEnd = errorTokenizer.at;
+                                        }
+                                        else
+                                        {
+                                            while ( errorToken.type != Token_Type::OpenParen )
+                                            {
+                                                errorToken = GetToken( &errorTokenizer );
+                                            }
+                                            fileEnd = errorTokenizer.at - 1;
+                                        }
+
+                                        String filename;
+                                        filename.content = fileStart;
+                                        filename.length = ( u32 ) ( fileEnd - fileStart );
+
+                                        Token line = {};
+                                        Token column = {};
+                                        if ( errorToken.type == Token_Type::OpenParen )
+                                        {
+                                            line = GetToken( &errorTokenizer );
+                                            // printf( "line %d ", StringToUInt( line ) );
+                                            errorToken = GetToken( &errorTokenizer );
+                                            if ( errorToken.type == Token_Type::Comma )
+                                            {
+                                                column = GetToken( &errorTokenizer );
+                                                // printf( "column %d ", StringToUInt( column ) );
+                                                errorToken = GetToken( &errorTokenizer );
+                                            }
+
+                                            errorToken = GetToken( &errorTokenizer ); // :
+                                        }
+
+                                        errorToken = GetToken( &errorTokenizer ); // fatal or error
+                                        if ( TokenEquals( errorToken, "fatal" ) )
+                                        {
+                                            errorToken = GetToken( &errorTokenizer );
+                                        }
+
+                                        Token type = errorToken;
+                                        Token errorNumber = GetToken( &errorTokenizer );
+                                        // printf( "error %.*s ", ( int ) errorNumber.textLength, errorNumber.text );
+                                        errorToken = GetToken( &errorTokenizer ); // :
+
+                                        errorToken = GetToken( &errorTokenizer ); // message start
+                                        if ( errorToken.type == Token_Type::Character )
+                                        {
+                                            --errorToken.text;
+                                        }
+                                        char *messageStart = errorToken.text;
+                                        temp = messageStart;
+                                        while ( temp && *temp != '\n' )
+                                        {
+                                            ++temp;
+                                        }
+                                        --temp;
+                                        String message;
+                                        message.content = messageStart;
+                                        message.length = ( u32 ) ( temp - messageStart );
+
+                                        EncodeMap( 6, &encoder );
+                                        EncodeString( "lnum", &encoder );
+                                        if ( line.text )
+                                        {
+                                            EncodeUInt( StringToUInt( line ), &encoder );
+                                        }
+                                        else
+                                        {
+                                            EncodeUInt( 1, &encoder );
+                                        }
+
+                                        EncodeString( "col", &encoder );
+                                        if ( column.text )
+                                        {
+                                            EncodeUInt( StringToUInt( column ), &encoder );
+                                        }
+                                        else
+                                        {
+                                            EncodeUInt( 1, &encoder );
+                                        }
+                                        EncodeString( "nr", &encoder );
+                                        EncodeString( String{ ( u32 ) errorNumber.textLength, errorNumber.text }, &encoder );
+                                        EncodeString( "type", &encoder );
+                                        if ( TokenEquals( type, "warning" ) )
+                                        {
+                                            EncodeString( "W", &encoder );
+                                        }
+                                        else
+                                        {
+                                            EncodeString( "E", &encoder );
+                                        }
+
+                                        EncodeString( "filename", &encoder );
+                                        if ( StringsAreEqual( filename, "LINK" ) || StringStartsWith( errorNumber.text, "LNK" ) )
+                                        {
+                                            EncodeString( "build.bat", &encoder );
+                                        }
+                                        else
+                                        {
+                                            EncodeString( filename, &encoder );
+                                            // printf( "file: %.*s ", ( int ) filename.length, filename.content );
+                                        }
+                                        EncodeString( "text", &encoder );
+                                        EncodeString( message, &encoder );
+                                        // printf( "message %.*s\n", ( int ) message.length, message.content );
+
+                                        tokenizer.at = temp;
+                                        errorCount += 1;
+                                    }
+                                }
+                                break;
+
+                                case Token_Type::EndOfStream:
+                                {
+                                    parsing = false;
+                                }
+                                break;
+                            }
+                        }
+
+                        *arrayCountSpot = MP_Type::ARRAY_16;
+                        arrayCountSpot += 1;
+                        *( ( u16 * ) arrayCountSpot ) = _byteswap_ushort( ( u16 ) errorCount );
+                        VirtualFree( compilationFile, 0, MEM_RELEASE );
+                        DeleteFile( "compilation.log" );
+                    }
+                    else
+                    {
+                        EncodeString( "messages", &encoder );
+                        EncodeArray( 1, &encoder );
+                        EncodeMap( 1, &encoder );
+                        EncodeString( "text", &encoder );
+                        EncodeString( "Failed to open compilation log", &encoder );
+                    }
+                }
+                else
+                {
+                    printf( "ShellExecute failed: %d\n", GetLastError() );
+                    EncodeString( "messages", &encoder );
+                    EncodeArray( 1, &encoder );
+                    EncodeString( "ShellExecute failed", &encoder );
+                }
             }
             else if ( StringsAreEqual( command, "GetDeclarations" ) )
             {

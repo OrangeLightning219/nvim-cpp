@@ -6,7 +6,7 @@ set compiler_args=^
 -nologo ^
 -GR- ^
 -EHa- ^
--Od -Oi ^
+-O2 -Oi ^
 -WX -W4 ^
 -DSLOW -DINTERNAL -DUNITY_BUILD ^
 -FC ^
@@ -20,7 +20,7 @@ set compiler_args=^
 -wd4456
 
 set linker_args=-incremental:no 
-set linker_libs=Ws2_32.lib
+set linker_libs=Ws2_32.lib Shell32.lib
 
 pushd build
 

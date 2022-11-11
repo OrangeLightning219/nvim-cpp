@@ -37,6 +37,7 @@ enum class Token_Type
     Semicolon,
     Comma,
     Asterisk,
+    Ampersand,
     OpenBracket,
     CloseBracket,
     OpenBrace,
@@ -191,6 +192,7 @@ internal Token GetToken( Tokenizer *tokenizer )
         case '{': result.type = Token_Type::OpenBrace; break;
         case '}': result.type = Token_Type::CloseBrace; break;
         case '*': result.type = Token_Type::Asterisk; break;
+        case '&': result.type = Token_Type::Ampersand; break;
         case ';': result.type = Token_Type::Semicolon; break;
         case ',': result.type = Token_Type::Comma; break;
         case ':': result.type = Token_Type::Colon; break;
@@ -492,7 +494,6 @@ internal bool ParseFile( Parse_State *state, Memory_Arena *arena, char *file )
 
     bool parsing = true;
 
-    u32 previousLineCount = 0;
     while ( parsing )
     {
         Token token = GetToken( &tokenizer );
@@ -542,7 +543,17 @@ internal bool ParseFile( Parse_State *state, Memory_Arena *arena, char *file )
                             token = GetToken( &tokenizer );
                             if ( token.type == Token_Type::Identifier )
                             {
-                                tokenizer.at = temp;
+                                if ( TokenEquals( token, "__declspec" ) )
+                                {
+                                    while ( token.type != Token_Type::CloseParen )
+                                    {
+                                        token = GetToken( &tokenizer );
+                                    }
+                                }
+                                else
+                                {
+                                    tokenizer.at = temp;
+                                }
                             }
                             else if ( token.type == Token_Type::OpenBrace )
                             {
@@ -561,20 +572,37 @@ internal bool ParseFile( Parse_State *state, Memory_Arena *arena, char *file )
                             Function_Declaration *function = PushStruct( &fileState->arena, Function_Declaration );
                             Token type = GetToken( &tokenizer );
                             Token nextToken = GetToken( &tokenizer );
-                            if ( nextToken.type == Token_Type::Asterisk )
+                            Token name;
+                            if ( nextToken.type == Token_Type::OpenParen )
                             {
-                                type.textLength = nextToken.text - type.text + 1;
-                                nextToken = GetToken( &tokenizer );
+                                name = type;
+                                type.text = "macro_function";
+                                type.textLength = 14;
                             }
-                            Token name = nextToken;
+                            else
+                            {
+                                if ( nextToken.type == Token_Type::Asterisk || nextToken.type == Token_Type::Ampersand )
+                                {
+                                    type.textLength = nextToken.text - type.text + 1;
+                                    nextToken = GetToken( &tokenizer );
+                                }
+                                name = nextToken;
+                            }
 
+                            if ( TokenEquals( name, "operator" ) )
+                            {
+                                continue;
+                            }
                             function->line = tokenizer.lineCount;
                             function->file = fileState->name;
                             function->returnType = PushAndCopyString( &fileState->arena, type );
                             function->name = PushAndCopyString( &fileState->arena, name );
                             // printf( "Function name %s\n", function->name );
 
-                            nextToken = GetToken( &tokenizer ); // open paren
+                            if ( nextToken.type != Token_Type::OpenParen )
+                            {
+                                nextToken = GetToken( &tokenizer ); // open paren
+                            }
                             nextToken = GetToken( &tokenizer ); // close paren if no arguments
 
                             Tokenizer counter = tokenizer;
@@ -583,20 +611,50 @@ internal bool ParseFile( Parse_State *state, Memory_Arena *arena, char *file )
                             while ( counterToken.type != Token_Type::CloseParen )
                             {
                                 counterToken = GetToken( &counter );
-                                if ( counterToken.type == Token_Type::Asterisk )
-                                {
-                                    counterToken = GetToken( &counter );
-                                }
-
-                                argCount += 1;
-                                while ( counterToken.type != Token_Type::Comma && counterToken.type != Token_Type::CloseParen )
-                                {
-                                    counterToken = GetToken( &counter );
-                                }
-
                                 if ( counterToken.type == Token_Type::Comma )
                                 {
+                                    argCount += 1;
                                     counterToken = GetToken( &counter );
+                                }
+                                else if ( counterToken.type == Token_Type::CloseParen )
+                                {
+                                    argCount += 1;
+                                    break;
+                                }
+                                else
+                                {
+                                    if ( counterToken.type == Token_Type::Asterisk || counterToken.type == Token_Type::Ampersand )
+                                    {
+                                        counterToken = GetToken( &counter );
+                                    }
+
+                                    argCount += 1;
+                                    while ( counterToken.type != Token_Type::Comma && counterToken.type != Token_Type::CloseParen )
+                                    {
+                                        counterToken = GetToken( &counter );
+                                        if ( counterToken.type == Token_Type::OpenBrace )
+                                        {
+                                            while ( counterToken.type == Token_Type::CloseBrace )
+                                            {
+                                                counterToken = GetToken( &counter );
+                                            }
+                                            counterToken = GetToken( &counter );
+                                        }
+
+                                        if ( counterToken.type == Token_Type::OpenParen )
+                                        {
+                                            while ( counterToken.type == Token_Type::CloseParen )
+                                            {
+                                                counterToken = GetToken( &counter );
+                                            }
+                                            counterToken = GetToken( &counter );
+                                        }
+                                    }
+
+                                    if ( counterToken.type == Token_Type::Comma )
+                                    {
+                                        counterToken = GetToken( &counter );
+                                    }
                                 }
                             }
 
@@ -606,29 +664,67 @@ internal bool ParseFile( Parse_State *state, Memory_Arena *arena, char *file )
                                 while ( nextToken.type != Token_Type::CloseParen )
                                 {
                                     Token argType = nextToken;
+                                    Token argName;
                                     nextToken = GetToken( &tokenizer );
-                                    if ( nextToken.type == Token_Type::Asterisk )
+                                    if ( nextToken.type == Token_Type::Comma )
                                     {
-                                        argType.textLength = nextToken.text - argType.text + 1;
+                                        argName = argType;
+                                        argType.text = "macro_arg";
+                                        argType.textLength = 9;
                                         nextToken = GetToken( &tokenizer );
                                     }
-                                    Token argName = nextToken;
+                                    else if ( nextToken.type == Token_Type::CloseParen )
+                                    {
+                                        argName = argType;
+                                        argType.text = "macro_arg";
+                                        argType.textLength = 9;
+                                        // printf( "Test %.*s\n", ( int ) argType.textLength, argType.text );
+                                        Field_Declaration *arg = function->arguments + function->argumentCount++;
+                                        arg->type = PushAndCopyString( &fileState->arena, argType );
+                                        arg->name = PushAndCopyString( &fileState->arena, argName );
+                                        break;
+                                    }
+                                    else
+                                    {
+                                        if ( nextToken.type == Token_Type::Asterisk || counterToken.type == Token_Type::Ampersand )
+                                        {
+                                            argType.textLength = nextToken.text - argType.text + 1;
+                                            nextToken = GetToken( &tokenizer );
+                                        }
+                                        argName = nextToken;
 
+                                        while ( nextToken.type != Token_Type::Comma && nextToken.type != Token_Type::CloseParen )
+                                        {
+                                            nextToken = GetToken( &tokenizer );
+                                            if ( nextToken.type == Token_Type::OpenBrace )
+                                            {
+                                                while ( nextToken.type != Token_Type::CloseBrace )
+                                                {
+                                                    nextToken = GetToken( &tokenizer );
+                                                }
+                                                nextToken = GetToken( &tokenizer );
+                                            }
+
+                                            if ( nextToken.type == Token_Type::OpenParen )
+                                            {
+                                                while ( nextToken.type != Token_Type::CloseParen )
+                                                {
+                                                    nextToken = GetToken( &tokenizer );
+                                                }
+                                                nextToken = GetToken( &tokenizer );
+                                            }
+                                        }
+
+                                        if ( nextToken.type == Token_Type::Comma )
+                                        {
+                                            nextToken = GetToken( &tokenizer );
+                                        }
+                                    }
                                     Field_Declaration *arg = function->arguments + function->argumentCount++;
                                     arg->type = PushAndCopyString( &fileState->arena, argType );
                                     // printf( "Arg type %s\n", arg->type );
                                     arg->name = PushAndCopyString( &fileState->arena, argName );
                                     // printf( "Arg name %s\n", arg->name );
-
-                                    while ( nextToken.type != Token_Type::Comma && nextToken.type != Token_Type::CloseParen )
-                                    {
-                                        nextToken = GetToken( &tokenizer );
-                                    }
-
-                                    if ( nextToken.type == Token_Type::Comma )
-                                    {
-                                        nextToken = GetToken( &tokenizer );
-                                    }
                                 }
                             }
                             else
@@ -763,12 +859,12 @@ internal bool ParseFile( Parse_State *state, Memory_Arena *arena, char *file )
                                           !TokenEquals( counterToken, "union" ) )
                                 {
                                     Token counterToken = GetToken( &counter );
-                                    if ( counterToken.type == Token_Type::Asterisk )
+                                    if ( counterToken.type == Token_Type::Asterisk || nextToken.type == Token_Type::Ampersand )
                                     {
                                         counterToken = GetToken( &counter );
                                     }
 
-                                    if ( counterToken.type == Token_Type::OpenParen ) // skip functions
+                                    if ( counterToken.type == Token_Type::OpenParen || TokenEquals( name, "operator" ) ) // skip functions
                                     {
                                         while ( counterToken.type != Token_Type::CloseParen )
                                         {
@@ -823,14 +919,14 @@ internal bool ParseFile( Parse_State *state, Memory_Arena *arena, char *file )
                                     {
                                         Token type = nextToken;
                                         Token nextToken = GetToken( &tokenizer );
-                                        if ( nextToken.type == Token_Type::Asterisk )
+                                        if ( nextToken.type == Token_Type::Asterisk || nextToken.type == Token_Type::Ampersand )
                                         {
                                             type.textLength = nextToken.text - type.text + 1;
                                             nextToken = GetToken( &tokenizer );
                                         }
                                         Token name = nextToken;
 
-                                        if ( name.type == Token_Type::OpenParen ) // skip functions
+                                        if ( name.type == Token_Type::OpenParen || TokenEquals( name, "operator" ) ) // skip functions
                                         {
                                             while ( nextToken.type != Token_Type::CloseParen )
                                             {
